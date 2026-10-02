@@ -47,6 +47,11 @@ const StartGame = (parent: string) => {
     const game = new Game({ ...config, parent });
 
     const refreshScale = () => {
+        // Keyboard is open: the "resize" is just the keyboard, so leave the game alone
+        if (document.activeElement?.tagName === 'INPUT') {
+            return;
+        }
+
         // wait a frame so the browser has applied the new size first
         requestAnimationFrame(() => game.scale.refresh());
     };

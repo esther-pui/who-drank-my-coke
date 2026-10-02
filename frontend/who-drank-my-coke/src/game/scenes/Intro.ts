@@ -1,5 +1,6 @@
 import { Scene } from 'phaser';
 
+const FAST_INTRO = false;
 export class Intro extends Scene
 {
     constructor ()
@@ -57,6 +58,13 @@ export class Intro extends Scene
             'I opened the fridge...\nand it shocked me.',
             'WHO DRANK MY COKE?!'
         ];
+
+        if (FAST_INTRO) {
+            storyImage.y = 60;
+            narration.setText(lines[lines.length - 1]);
+            this.showStartButton();
+            return;
+        }
 
         let currentLine = 0;
 

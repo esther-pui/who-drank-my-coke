@@ -1,6 +1,43 @@
 import { GameObjects, Scene } from 'phaser';
 
 const API_URL = import.meta.env.VITE_API_URL;
+const INSPECTIONS_NEEDED_TO_ACCUSE = 3;
+
+// true on phones/tablets (finger), false with a mouse
+const IS_TOUCH = window.matchMedia('(pointer: coarse)').matches;
+
+// ---------------------------------------------------------
+// CUSTOM CURSORS (drawn as SVG, no image files needed)
+// ---------------------------------------------------------
+
+const svgCursor = (svg: string, x: number, y: number, fallback: string) =>
+    `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
+
+// Detective magnifying glass: gold rim, wooden handle
+const MAGNIFIER_CURSOR = svgCursor(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+        <line x1="19" y1="19" x2="29" y2="29" stroke="#222" stroke-width="6" stroke-linecap="round"/>
+        <line x1="19" y1="19" x2="29" y2="29" stroke="#a0662b" stroke-width="3.5" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="9" fill="#b4dcff" fill-opacity="0.35" stroke="#222" stroke-width="4"/>
+        <circle cx="12" cy="12" r="9" fill="none" stroke="#f2c14e" stroke-width="2"/>
+        <path d="M8 9 a5 5 0 0 1 4 -3" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+    </svg>`,
+    12, 12,          // click point = center of the lens
+    'zoom-in'        // fallback if the SVG cursor isn't supported
+);
+
+// Speech bubble for talking to characters
+const TALK_CURSOR = svgCursor(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+        <path d="M4 5 h22 a3 3 0 0 1 3 3 v11 a3 3 0 0 1 -3 3 h-12 l-6 6 v-6 h-4 a3 3 0 0 1 -3 -3 v-11 a3 3 0 0 1 3 -3 z"
+              fill="#ffffff" stroke="#222" stroke-width="2.5" stroke-linejoin="round"/>
+        <circle cx="10" cy="13.5" r="1.8" fill="#222"/>
+        <circle cx="15" cy="13.5" r="1.8" fill="#222"/>
+        <circle cx="20" cy="13.5" r="1.8" fill="#222"/>
+    </svg>`,
+    4, 5,            // click point = top-left corner of the bubble
+    'pointer'
+);
 
 export class Game extends Scene
 {
@@ -14,6 +51,7 @@ export class Game extends Scene
     characterImage: GameObjects.Image | null = null;
     characterNameText: GameObjects.Text | null = null;
     playerInput: HTMLInputElement | null = null;
+    viewportHandler: (() => void) | null = null;
 
     currentCharacter: string | null = null;
 
@@ -30,6 +68,11 @@ export class Game extends Scene
     // Things on the main kitchen screen
     baseGameObjects: GameObjects.GameObject[] = [];
 
+    // Accuse unlock
+    inspectedObjects: Set<string> = new Set();
+    accuseButton: GameObjects.Text | null = null;
+    accuseHint: GameObjects.Text | null = null;
+
     constructor ()
     {
         super('Game');
@@ -41,6 +84,9 @@ export class Game extends Scene
 
     create ()
     {
+
+        this.inspectedObjects = new Set();
+
         // Grand kitchen background
         this.kitchenBackground =
             this.add.image(
@@ -276,9 +322,30 @@ export class Game extends Scene
             }
         );
 
+        this.accuseButton = accuseButton;
+
         this.baseGameObjects.push(
             accuseButton
         );
+
+        // Hint show until Accuse is unlocked
+        this.accuseHint = this.add.text(
+            1000,
+            735,
+            '',
+            {
+                fontSize: '16px',
+                color: '#ffffff',
+                backgroundColor: '#00000099',
+                padding: { x: 10, y: 6}
+            }
+        ).setOrigin(1, 1)
+
+        this.baseGameObjects.push(
+            this.accuseHint
+        );
+
+        this.updateAccuseButton();
     }
 
     // =========================================================
@@ -306,7 +373,7 @@ export class Game extends Scene
         );
 
         hitbox.setInteractive({
-            useHandCursor: true
+            cursor: isObject ? MAGNIFIER_CURSOR : TALK_CURSOR
         });
 
         hitbox.on(
@@ -483,7 +550,7 @@ export class Game extends Scene
             'Ask something...';
 
         input.style.position =
-            'absolute';
+            'fixed';
 
         input.style.width =
             '500px';
@@ -524,7 +591,31 @@ export class Game extends Scene
 
         this.positionInput();
 
-        input.focus();
+        // On phones, don't pop the keyboard straight away:
+        // let the player see the character first
+        if (!IS_TOUCH)
+        {
+            input.focus();
+        }
+
+        // Follow the keyboard as it opens, closes or moves
+        this.viewportHandler = () => this.positionInput();
+        window.visualViewport?.addEventListener('resize', this.viewportHandler);
+        window.visualViewport?.addEventListener('scroll', this.viewportHandler);
+
+        input.addEventListener('focus', () =>
+        {
+            // the keyboard takes a moment to slide in
+            setTimeout(() => this.positionInput(), 300);
+        });
+
+        input.addEventListener('blur', () =>
+        {
+            // iPhone leaves the page scrolled after the keyboard closes
+            window.scrollTo(0, 0);
+            this.positionInput();
+            this.scale.refresh();
+        });
 
         input.addEventListener(
             'keydown',
@@ -577,6 +668,31 @@ export class Game extends Scene
         {
             return;
         }
+
+        const vv = window.visualViewport;
+
+        const keyboardOpen =
+            !!vv &&
+            document.activeElement === this.playerInput &&
+            vv.height < window.innerHeight * 0.75;
+
+        // Keyboard open: pin the input just above it, at normal size
+        if (keyboardOpen && vv)
+        {
+            const width = Math.min(500, vv.width - 24);
+
+            this.playerInput.style.transform = 'none';
+            this.playerInput.style.width = `${width}px`;
+            this.playerInput.style.left =
+                `${vv.offsetLeft + (vv.width - width) / 2}px`;
+            this.playerInput.style.top =
+                `${vv.offsetTop + vv.height - 42 - 12}px`;
+
+            return;
+        }
+
+        // Keyboard closed: sit inside the dialogue panel as before
+        this.playerInput.style.width = '500px';
 
         const canvas =
             this.game.canvas;
@@ -667,7 +783,14 @@ export class Game extends Scene
 
             this.playerInput.value = '';
 
-            this.playerInput.focus();
+            if (IS_TOUCH)
+            {
+                this.playerInput.blur();   // hide keyboard so the reply can be read
+            }
+            else
+            {
+                this.playerInput.focus();
+            }
         }
         catch (error)
         {
@@ -708,11 +831,21 @@ export class Game extends Scene
             this.dialogueText = null;
         }
 
+        if (this.viewportHandler)
+        {
+            window.visualViewport?.removeEventListener('resize', this.viewportHandler);
+            window.visualViewport?.removeEventListener('scroll', this.viewportHandler);
+            this.viewportHandler = null;
+        }
+
         if (this.playerInput)
         {
+            this.playerInput.blur();
             this.playerInput.remove();
             this.playerInput = null;
         }
+
+        window.scrollTo(0, 0);
 
         this.currentCharacter = null;
 
@@ -790,6 +923,8 @@ export class Game extends Scene
         data: any
     )
     {
+        this.inspectedObjects.add(objectId);
+
         this.hideGameBoard();
 
         // Dark overlay
@@ -962,6 +1097,28 @@ export class Game extends Scene
                 object.setVisible(true);
             }
         );
+
+        this.updateAccuseButton();
+    }
+
+     // =========================================================
+    // UPDATE ACCUSE BUTTON
+    // =========================================================
+
+    updateAccuseButton() 
+    {
+        const count = this.inspectedObjects.size;
+        const unlocked = count >= INSPECTIONS_NEEDED_TO_ACCUSE;
+
+        this.accuseButton?.setVisible(unlocked);
+
+        if(this.accuseHint)
+        {
+            this.accuseHint.setVisible(!unlocked);
+            this.accuseHint.setText(
+                `Inspect clues to accuse (${count}/${INSPECTIONS_NEEDED_TO_ACCUSE})`
+            );
+        }
     }
 
     // =========================================================
@@ -1367,6 +1524,8 @@ export class Game extends Scene
         // Remove everything except
         // the kitchen background and base UI.
         this.removeTemporaryObjects();
+
+        this.kitchenBackground?.setVisible(true);
 
         this.showGameBoard();
     }
